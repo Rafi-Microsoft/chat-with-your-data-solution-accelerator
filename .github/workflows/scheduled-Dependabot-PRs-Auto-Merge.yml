@@ -73,15 +73,38 @@ jobs:
             echo "⚠️ No matching PRs to process."
             exit 0
           fi
+
           while IFS= read -r pr_url; do
             pr_number=$(basename "$pr_url")
-            echo "🔁 Rebasing PR #$pr_number if conflicts exist"
+            echo "🔁 Checking PR #$pr_number for conflicts..."
             mergeable=$(gh pr view "$pr_number" --json mergeable --jq '.mergeable')
+
             if [[ "$mergeable" == "CONFLICTING" ]]; then
-              echo "❌ Merge conflicts detected. Rebasing PR #$pr_number"
-              gh pr update-branch "$pr_url" || echo "❗ Rebase (update-branch) failed."
+              echo "⚠️ Merge conflicts detected. Performing manual rebase for PR #$pr_number..."
+
+              head_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName')
+              base_branch=$(gh pr view "$pr_number" --json baseRefName --jq '.baseRefName')
+
+              git fetch origin "$base_branch":"$base_branch"
+              git fetch origin "$head_branch":"$head_branch"
+              git checkout "$head_branch"
+
+              git config user.name "github-actions"
+              git config user.email "action@github.com"
+
+              # Attempt rebase with 'theirs' strategy
+              if git rebase --strategy=recursive -X theirs "$base_branch"; then
+                echo "✅ Rebase successful. Pushing..."
+                git push origin "$head_branch" --force
+              else
+                echo "❌ Rebase failed. Aborting..."
+                git rebase --abort || true
+              fi
+            else
+              echo "✅ PR #$pr_number is mergeable. Skipping rebase."
             fi
           done < matched_prs.txt
+
           
       - name: Auto-Merge PRs using available strategy
         if: success()
@@ -108,7 +131,7 @@ jobs:
 
               if [[ "$mergeable" == "MERGEABLE" ]]; then
                 success=0
-                for strategy in merge squash rebase; do
+                for strategy in rebase squash merge; do
                   echo "🚀 Trying to auto-merge PR #$pr_number using '$strategy' strategy..."
                   set -x
                   merge_output=$(gh pr merge --auto --"$strategy" "$pr_url" 2>&1)
