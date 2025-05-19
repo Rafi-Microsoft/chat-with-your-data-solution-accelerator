@@ -64,49 +64,25 @@ jobs:
           echo "👉 Matched PRs:"
           cat matched_prs.txt || echo "None"
 
-      - name: Rebase PR if Conflicts Exist (Manual rebase with prefer-theirs)
+      - name: Rebase PR if Conflicts Exist
         if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
           if [[ ! -s matched_prs.txt ]]; then
             echo "⚠️ No matching PRs to process."
             exit 0
           fi
           while IFS= read -r pr_url; do
             pr_number=$(basename "$pr_url")
-            echo "🔁 Checking PR #$pr_number for rebase"
+            echo "🔁 Rebasing PR #$pr_number if conflicts exist"
             mergeable=$(gh pr view "$pr_number" --json mergeable --jq '.mergeable')
-            author=$(gh pr view "$pr_number" --json author --jq '.author.login')
-            base_branch=$(gh pr view "$pr_number" --json baseRefName --jq '.baseRefName')
-
-            if [[ "$mergeable" == "CONFLICTING" && "$author" == "app/dependabot" && "$base_branch" == "dependabotchanges" ]]; then
-              echo "⚠️ Merge conflicts detected. Attempting manual rebase of PR #$pr_number..."
-
-              git fetch origin "$base_branch":"base_branch"
-              git fetch origin "refs/pull/$pr_number/head":"head_branch"
-
-              git checkout head_branch
-              # Manual rebase with prefer-theirs to resolve conflicts automatically in favor of base branch
-              git rebase base_branch -X theirs || {
-                echo "❗ Conflicts during rebase could not be automatically resolved."
-                git rebase --abort
-                continue
-              }
-
-              # Push the rebased branch back
-              git push --force-with-lease origin head_branch:"dependabot/${pr_number}" || {
-                echo "❗ Failed to push rebased branch for PR #$pr_number"
-                continue
-              }
-              echo "✅ Successfully rebased and pushed PR #$pr_number"
-            else
-              echo "ℹ️ PR #$pr_number is not in a conflicting state or not a Dependabot PR. Skipping."
+            if [[ "$mergeable" == "CONFLICTING" ]]; then
+              echo "❌ Merge conflicts detected. Rebasing PR #$pr_number"
+              gh pr update-branch "$pr_url" || echo "❗ Rebase (update-branch) failed."
             fi
           done < matched_prs.txt
-
+          
       - name: Auto-Merge PRs using available strategy
         if: success()
         env:
